@@ -1,0 +1,126 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="imgui">
+      <UniqueIdentifier>{20b90ce4-7fcb-4731-b9a0-075f875de82d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="sources">
+      <UniqueIdentifier>{f18ab499-84e1-499f-8eff-9754361e0e52}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="fluidSimulatorWindow.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="particle.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="GPU\ComputeShader.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="GPU\glad.c">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="GPU\MathConstants.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="GPU\Buffers.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="GPU\Simulation.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="GPU\Shader.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="GPU\VertexBuffer.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="GPU\Texture.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="GPU\DataType.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="GPU\GPUSort.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="GPU\ParticleSpawner.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="GPU\std_image.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui_demo.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui_draw.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui_tables.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui_widgets.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui_impl_glfw.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+    <ClCompile Include="imgui_impl_opengl3.cpp">
+      <Filter>sources</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="fluidSimulatorWindow.h" />
+    <ClInclude Include="particle.h" />
+    <ClInclude Include="Vec2.h" />
+    <ClInclude Include="GPU\ComputeShader.h" />
+    <ClInclude Include="GPU\glad.h" />
+    <ClInclude Include="GPU\khrplatform.h" />
+    <ClInclude Include="GPU\MathConstants.h" />
+    <ClInclude Include="GPU\GeneralSettings.h" />
+    <ClInclude Include="GPU\Buffers.h" />
+    <ClInclude Include="GPU\Simulation.h" />
+    <ClInclude Include="GPU\Shader.h" />
+    <ClInclude Include="GPU\VertexBuffer.h" />
+    <ClInclude Include="GPU\Texture.h" />
+    <ClInclude Include="GPU\DataType.h" />
+    <ClInclude Include="GPU\GPUSort.h" />
+    <ClInclude Include="GPU\ShaderLocation.h" />
+    <ClInclude Include="Vec4.h" />
+    <ClInclude Include="ButtonState.h" />
+    <ClInclude Include="GPU\ParticleSpawner.h" />
+    <ClInclude Include="GPU\std_image.h" />
+    <ClInclude Include="imstb_truetype.h" />
+    <ClInclude Include="imconfig.h" />
+    <ClInclude Include="imgui.h" />
+    <ClInclude Include="imgui_internal.h" />
+    <ClInclude Include="imstb_rectpack.h" />
+    <ClInclude Include="imstb_textedit.h" />
+    <ClInclude Include="imgui_impl_opengl3.h" />
+    <ClInclude Include="imgui_impl_glfw.h" />
+    <ClInclude Include="imgui_impl_opengl3_loader.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="GPU\Shaders\simulation_early.comp" />
+    <None Include="GPU\Shaders\sort.comp" />
+    <None Include="GPU\Shaders\sort_calculate_offsets.comp" />
+    <None Include="GPU\Shaders\sprite.vert" />
+    <None Include="GPU\Shaders\sprite.frag" />
+    <None Include="GPU\Shaders\calculate_density.comp" />
+    <None Include="GPU\Shaders\calculate_pressure.comp" />
+    <None Include="GPU\Shaders\calculate_viscosity_update_pos.comp" />
+    <None Include="GPU\Shaders\whole_quad.vert" />
+    <None Include="GPU\Shaders\draw_collision.frag" />
+    <None Include="GPU\Shaders\sprite_image.vert" />
+    <None Include="GPU\Shaders\sprite_image.frag" />
+    <None Include="imgui.ini" />
+  </ItemGroup>
+</Project>

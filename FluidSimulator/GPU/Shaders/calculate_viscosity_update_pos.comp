@@ -1,0 +1,455 @@
+#version 430 core
+layout (local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(std140, binding = 0) uniform Settings {
+    uint num_particles;
+    float gravity;
+    float delta_time;
+    float collision_damping;
+    float smoothing_radius;
+    float target_density;
+    float pressure_multiplier;
+    float near_pressure_multiplier;
+    float viscosity_strength;
+    float poly6_scaling_factor;
+    float spiky_pow3_scaling_factor;
+    float spiky_pow2_scaling_factor;
+    float spiky_pow3_derivative_scaling_factor;
+    float spiky_pow2_derivative_scaling_factor;
+    vec2 interaction_input_point;
+    float interaction_input_strength;
+    float interaction_input_radius;
+    vec2 obstacle_size;
+    vec2 obstacle_centre;
+};
+
+uniform uint window_width;
+uniform uint window_height;
+uniform float aspect_ratio_change;
+
+#define POSITION_FACTOR 500.0f
+#define POSITION_FACTOR_INVERSE (1.0f / POSITION_FACTOR)
+
+// Constants used for hashing
+const uint hashK1 = 15823;
+const uint hashK2 = 9737333;
+
+// Convert floating point position into an integer cell coordinate
+ivec2 GetCell2D(vec2 position, float radius)
+{
+	return ivec2(floor(position / radius));
+}
+
+// Hash cell coordinate to a single unsigned integer
+uint HashCell2D(ivec2 cell)
+{
+	uvec2 unsigned_cell = uvec2(cell);
+	uint a = unsigned_cell.x * hashK1;
+	uint b = unsigned_cell.y * hashK2;
+	return (a + b);
+}
+
+uint KeyFromHash(uint hash, uint tableSize)
+{
+	return hash % tableSize;
+}
+
+const ivec2 offsets2D[9] =
+{
+	ivec2(-1, 1),
+	ivec2(0, 1),
+	ivec2(1, 1),
+	ivec2(-1, 0),
+	ivec2(0, 0),
+	ivec2(1, 0),
+	ivec2(-1, -1),
+	ivec2(0, -1),
+	ivec2(1, -1),
+};
+
+layout(std430, binding = 0) readonly buffer _Densities
+{
+    vec2 Densities[];
+};
+
+layout(std430, binding = 1) readonly buffer _PredictedPositions
+{
+    vec2 PredictedPositions[];
+};
+
+layout(std430, binding = 2) readonly buffer _SpatialOffsets
+{
+    uint SpatialOffsets[];
+};
+
+struct SpatialIndex {
+    uint index;
+    uint hash;
+    uint key;
+};
+
+layout(std430, binding = 3) readonly buffer _SpatialIndices
+{
+    SpatialIndex SpatialIndices[];
+};
+
+layout(std430, binding = 4) buffer _Velocities {
+    vec2 Velocities[];
+};
+
+layout(std430, binding = 5) buffer _Positions {
+    vec2 Positions[];
+};
+
+uniform usampler2D CollisionMap;
+
+float SmoothingKernelPoly6(float dst, float radius)
+{
+	if (dst < radius)
+	{
+		float v = radius * radius - dst * dst;
+		return v * v * v * poly6_scaling_factor;
+	}
+	return 0;
+}
+
+float SpikyKernelPow3(float dst, float radius)
+{
+	if (dst < radius)
+	{
+		float v = radius - dst;
+		return v * v * v * spiky_pow3_scaling_factor;
+	}
+	return 0;
+}
+
+float SpikyKernelPow2(float dst, float radius)
+{
+	if (dst < radius)
+	{
+		float v = radius - dst;
+		return v * v * spiky_pow2_scaling_factor;
+	}
+	return 0;
+}
+
+float DerivativeSpikyPow3(float dst, float radius)
+{
+	if (dst <= radius)
+	{
+		float v = radius - dst;
+		return -v * v * spiky_pow3_derivative_scaling_factor;
+	}
+	return 0;
+}
+
+float DerivativeSpikyPow2(float dst, float radius)
+{
+	if (dst <= radius)
+	{
+		float v = radius - dst;
+		return -v * spiky_pow2_derivative_scaling_factor;
+	}
+	return 0;
+}
+
+float DensityKernel(float dst, float radius)
+{
+	return SpikyKernelPow2(dst, radius);
+}
+
+float NearDensityKernel(float dst, float radius)
+{
+	return SpikyKernelPow3(dst, radius);
+}
+
+float DensityDerivative(float dst, float radius)
+{
+	return DerivativeSpikyPow2(dst, radius);
+}
+
+float NearDensityDerivative(float dst, float radius)
+{
+	return DerivativeSpikyPow3(dst, radius);
+}
+
+float PressureFromDensity(float density)
+{
+	return (density - target_density) * pressure_multiplier;
+}
+
+float NearPressureFromDensity(float near_density)
+{
+	return near_pressure_multiplier * near_density;
+}
+
+float ViscosityKernel(float dst, float radius)
+{
+	return SmoothingKernelPoly6(dst, smoothing_radius);
+}
+
+void CalculateViscosity (uint id)
+{		
+	vec2 pos = PredictedPositions[id];
+    ivec2 origin_cell = GetCell2D(pos, smoothing_radius);
+    float sqr_radius = smoothing_radius * smoothing_radius;
+
+    vec2 viscosity_force = vec2(0);
+    vec2 current_velocity = Velocities[id.x];
+
+    for (int i = 0; i < 9; i++)
+    {
+        uint hash = HashCell2D(origin_cell + offsets2D[i]);
+        uint key = KeyFromHash(hash, num_particles);
+        uint curr_index = SpatialOffsets[key];
+
+        while (curr_index < num_particles)
+        {
+            SpatialIndex index_data = SpatialIndices[curr_index];
+            curr_index++;
+            // Exit if no longer looking at the correct bin
+            if (index_data.key != key) break;
+            // Skip if hash does not match
+            if (index_data.hash != hash) continue;
+
+            uint neighbour_index = index_data.index;
+            // Skip if looking at self
+            if (neighbour_index == id) continue;
+
+            vec2 neighbour_pos = PredictedPositions[neighbour_index];
+            vec2 offset_to_neighbour = neighbour_pos - pos;
+            float sqr_dst_to_neighbour = dot(offset_to_neighbour, offset_to_neighbour);
+
+            // Skip if not within radius
+            if (sqr_dst_to_neighbour > sqr_radius) continue;
+
+            float dst = sqrt(sqr_dst_to_neighbour);
+            vec2 neighbour_velocity = Velocities[neighbour_index];
+            viscosity_force += (neighbour_velocity - current_velocity) * ViscosityKernel(dst, smoothing_radius);
+        }
+    }
+
+    Velocities[id.x] -= viscosity_force * viscosity_strength * delta_time;
+}
+
+uint GetCollisionMapValue(vec2 uv) {
+    vec2 collision_texel_pos = uv * textureSize(CollisionMap, 0);
+    ivec2 int_collision_texel_pos = ivec2(floor(collision_texel_pos));
+    float collision_float_value = texelFetch(CollisionMap, int_collision_texel_pos, 0).r;
+    return uint(collision_float_value);
+}
+
+bool IsCollidingMapBitIndex(uint collision_value, float uv_x) {
+    uint bit_index = uint(uv_x * window_width) & 7;
+    return (collision_value & (1 << bit_index)) != 0;
+}
+
+bool IsColliding(vec2 uv) {
+    uint collision_value = GetCollisionMapValue(uv);
+    return IsCollidingMapBitIndex(collision_value, uv.x);
+}
+
+vec2 UVToNDC(vec2 uv) {
+    return uv * 2.0f - 1.0f;
+}
+
+vec2 NDCToUV(vec2 ndc) {
+    return (ndc + 1.0f) * 0.5f;
+}
+
+//// Returns the correct position, slightly before impacting the first collision cell
+//vec3 HandleCollisionMapPosition(vec2 ndc_start_position, vec2 velocity, vec2 ndc_end_position) {
+//    vec2 uv = (ndc_start_position + vec2(1.0f, 1.0f)) * vec2(0.5f, 0.5f);
+//    bool is_collision_cell = false;
+//
+//    // These are the increments to step for each axis
+//    int direction_x = velocity.x < 0.0f ? -1 : (velocity.x > 0.0f ? 1 : 0);
+//    int direction_y = velocity.y < 0.0f ? -1 : (velocity.y > 0.0f ? 1 : 0);
+//
+//    vec2 abs_velocity = abs(velocity);
+//    vec2 abs_velocity_inverse = 1.0f / abs_velocity;
+//
+//    // Determine tx and ty, the values of the directed segment
+//    // where it crosses the first horizontal and vertical cell boundaries
+//    vec2 float_texel_pos = uv * textureSize(CollisionMap, 0);
+//    vec2 start_min = floor(float_texel_pos);
+//    vec2 start_max = start_min + vec2(1.0f, 1.0f);
+//    float tx = velocity.x < 0.0f ? float_texel_pos.x - start_min.x : start_max.x - float_texel_pos.x;
+//    tx *= abs_velocity_inverse.x;
+//    float ty = velocity.y < 0.0f ? float_texel_pos.y - start_min.y : start_max.y - float_texel_pos.y;
+//    ty *= abs_velocity_inverse.y;
+//
+//    vec2 uv_end = (ndc_end_position + vec2(1.0f, 1.0f)) * vec2(0.5f, 0.5f);
+//    ivec2 end_index = ivec2(floor(uv * textureSize(CollisionMap, 0)));
+//    int end_bit_index = int(uv_end.x * window_width) & 7;
+//
+//    // Determine delta_x/delta_y, how far one must step
+//    // along the directed line segment for the horizontal/vertical
+//    // movement to equal the width/height of a cell
+//    vec2 delta = 1.0f * abs_velocity_inverse;
+//    ivec2 current_sample_texel_indices = ivec2(start_min);
+//    int current_sample_bit_index = int(uv.x * window_width) & 7;
+//    uint current_collision_sample_value = uint(texelFetch(CollisionMap, current_sample_texel_indices, 0).r);
+//    is_collision_cell = (current_collision_sample_value & (1 << current_sample_bit_index)) != 0;
+//
+//    bool collision_mask = true;
+////    if (is_collision_cell) {
+////        // Reverse the direction
+////        //direction_x = -direction_x;
+////        //direction_y = -direction_y;
+////        collision_mask = false;
+////    }
+//    uint iteration = 0;
+//    uint max_iteration_count = abs(current_sample_texel_indices.x - end_index.x) * 8 + 8 + abs(current_sample_texel_indices.y - end_index.y);
+//    while (current_sample_texel_indices.x != end_index.x || current_sample_texel_indices.y != end_index.y
+//            ) {
+//        if (is_collision_cell && collision_mask || (!is_collision_cell && !is_collision_cell)) {
+//            break;
+//        }
+//    //while (!is_collision_cell) {
+//        if (tx <= ty) {
+//            // tx smaller, step along x
+//            tx += delta.x;
+//            // We must increment/decrement the bit index, and change to a different
+//            // Sample value once we leave the 0-7 range
+//            current_sample_bit_index += direction_x;
+//            if (current_sample_bit_index < 0) {
+//                current_sample_bit_index = 7;
+//                current_sample_texel_indices.x--;
+//                current_collision_sample_value = uint(texelFetch(CollisionMap, current_sample_texel_indices, 0).r);
+//            }
+//            else if (current_sample_bit_index > 7) {
+//                current_sample_bit_index = 0;
+//                current_sample_texel_indices.x++;
+//                current_collision_sample_value = uint(texelFetch(CollisionMap, current_sample_texel_indices, 0).r);
+//            }
+//        }
+//        else {
+//            // ty smaller, step along y
+//            ty += delta.y;
+//            current_sample_texel_indices.y += direction_y;
+//            current_collision_sample_value = uint(texelFetch(CollisionMap, current_sample_texel_indices, 0).r);
+//        }
+//        is_collision_cell = (current_collision_sample_value & (1 << current_sample_bit_index)) != 0;
+//        iteration++;
+//    }
+//
+//    // When we exit the loop, we have the indices of the first cell inside the CollisionMap
+//    // Which is an obstacle. We need to revert this value into the space of the normal framebuffer
+//    // position
+//    vec2 obstacle_uv = vec2(current_sample_texel_indices) / vec2(textureSize(CollisionMap, 0));
+//    vec2 framebuffer_texel_indices = obstacle_uv * vec2(window_width, window_height);
+//    // Add to the x component the bit index
+//    framebuffer_texel_indices.x += current_sample_bit_index;
+//
+//    // Convert this value into NDC, and then multiply with the position factor
+//    vec2 framebuffer_uv = framebuffer_texel_indices / vec2(window_width, window_height);
+//    vec2 framebuffer_ndc = framebuffer_uv * vec2(2.0f) - vec2(1.0f);
+//    return vec3(framebuffer_ndc * vec2(POSITION_FACTOR), 1.0f);
+//}
+
+void HandleCollisions(uint id) {
+    vec2 pos = Positions[id];
+	vec2 vel = Velocities[id];
+
+    float aspect_ratio = float(window_width) / float(window_height);
+    // We need this for the collision case
+    vec2 original_position = pos - vel * delta_time;
+    vec2 original_ndc_position = original_position * POSITION_FACTOR_INVERSE;
+    original_ndc_position.x /= aspect_ratio;
+    vec2 ndc_position = pos * vec2(POSITION_FACTOR_INVERSE);
+    ndc_position.x /= aspect_ratio;
+
+	// Keep particle inside bounds
+	if (ndc_position.x < -1.0f)
+	{
+		pos.x = -0.9999f * POSITION_FACTOR * aspect_ratio;
+        //pos.x = original_position.x;
+		vel.x *= -1.0f * collision_damping;
+	}
+    if (ndc_position.x > 1.0f)
+    {
+        pos.x = 0.9999f * POSITION_FACTOR * aspect_ratio;
+        //pos.x = original_position.x;
+		vel.x *= -1.0f * collision_damping;
+    }
+	if (ndc_position.y < -1.0f)
+	{
+		pos.y = -0.9999f * POSITION_FACTOR;
+        //pos.y = original_ndc_position.y > -1.0f ? original_position.y : -0.999f * POSITION_FACTOR;
+        vel.y *= -1.0f * collision_damping;
+	}
+    if (ndc_position.y > 1.0f)
+    {
+        pos.y = 0.9999f * POSITION_FACTOR;
+        //pos.y = original_ndc_position.y < 1.0f ? original_position.y : 0.999f * POSITION_FACTOR;
+        vel.y *= -1.0f * collision_damping;
+    }
+
+	// Collide particle against the test obstacle
+    vec2 obstacle_min = obstacle_centre - obstacle_size;
+    vec2 obstacle_max = obstacle_centre + obstacle_size;
+    vec2 particle_obstacle_distance = obstacle_centre - pos;
+    vec2 absolute_distance = abs(particle_obstacle_distance);
+	if (absolute_distance.x < obstacle_size.x && absolute_distance.y < obstacle_size.y) {
+        vec2 absolute_percentages = absolute_distance / obstacle_size;
+        if (absolute_percentages.x > absolute_percentages.y) {
+            pos.x = -1.001f * obstacle_size.x * sign(particle_obstacle_distance.x) + obstacle_centre.x;
+            vel.x *= -1 * collision_damping;
+            vel.y *= collision_damping;
+        }
+        else {
+            pos.y = -1.001f * obstacle_size.y * sign(particle_obstacle_distance.y) + obstacle_centre.y;
+            vel.y *= -1 * collision_damping;
+            vel.x *= collision_damping;
+        }
+    }
+
+    // Re-update the value, it might have changed
+    ndc_position = pos * vec2(POSITION_FACTOR_INVERSE);
+    ndc_position.x *= aspect_ratio;
+
+    // Perform the collisions against the drawn obstacles
+    const uint COLLISION_MAP_COUNT = 4;
+    // Use 4 samples of collisions (the initial, the current - updated pos and 2 intermediates points),
+    // to avoid tunnelling for rapidly moving particles
+    // Start from the original position towards the last. If we encounter a collision along the way,
+    // Stop the search, and place the particle before that cell
+    vec2 original_uv_position = NDCToUV(original_ndc_position);
+    vec2 last_uv_position = NDCToUV(ndc_position);
+    vec2 uv_step = (last_uv_position - original_uv_position) / (COLLISION_MAP_COUNT - 1);
+    vec2 current_uv_position = original_uv_position;
+    int last_non_collision_index = -1;
+    for (int index = 0; index < COLLISION_MAP_COUNT; index++) {
+        if (IsColliding(current_uv_position)) {
+            vec2 ndc = UVToNDC(current_uv_position);
+            // Push back the particle in the reverse of the velocity such that
+            // It will get out of the collision
+            pos = ndc * POSITION_FACTOR * vec2(aspect_ratio, 1.0f) - normalize(vel) * 0.001f * POSITION_FACTOR;
+            vel = -vel * collision_damping;
+            break;
+        }
+    }
+
+	// Update position and velocity
+	Positions[id] = pos * vec2(aspect_ratio_change, 1.0f);
+	Velocities[id] = vel;
+}
+
+void UpdatePositions(uint id)
+{
+	Positions[id] += Velocities[id] * delta_time;
+	HandleCollisions(id);
+}
+
+void main()
+{
+    uvec3 id = gl_GlobalInvocationID;
+    if (id.x > num_particles) return;
+
+    CalculateViscosity(id.x);
+
+    // At last we can update the positions based on the velocity and we must handle the collisions
+    // With the screen edge
+    UpdatePositions(id.x);
+}
